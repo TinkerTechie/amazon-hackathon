@@ -574,26 +574,42 @@ def main():
         logger.info("=== MODE: --validate-small (memory diagnostics only) ===")
         logger.info("Loading and preprocessing training data for validate-small run...")
         train_data = load_and_preprocess_train(data_dir)
+
         blocker = MultiBlocker(
             top_k=args.top_k,
             max_candidates_per_s1=300,
             cand_chunk_size=args.cand_chunk_size,
         )
+
+        cand_train = pd.concat(
+            [train_data["s2_train"], train_data["s3_train"]],
+            ignore_index=True,
+        )
+
+        logger.info(
+            f"validate-small candidates: {len(cand_train)} "
+            f"(S2={len(train_data['s2_train'])}, S3={len(train_data['s3_train'])})"
+        )
+
         validate_small_blocking(
             s1_df=train_data["s1_train"],
-            cand_df=train_data["cand_train"],
+            cand_df=cand_train,
             gt=train_data["gt_train"],
             blocker=blocker,
             n_s1=args.validate_small_n,
         )
+
+        del cand_train
+        gc.collect()
+
         del train_data
         gc.collect()
+
         logger.info("--validate-small complete. Exiting without running full pipeline.")
         return
 
     if args.test_only:
-        # Load saved artifacts
-        artifact_path = os.path.join(MODEL_DIR, "pipeline_artifacts.pkl")
+        # Load saved artifacts        artifact_path = os.path.join(MODEL_DIR, "pipeline_artifacts.pkl")
         logger.info(f"Loading artifacts from {artifact_path}...")
         with open(artifact_path, "rb") as f:
             artifacts = pickle.load(f)
