@@ -29,7 +29,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from preprocessing import preprocess_dataframe
-from blocking import MultiBlocker, evaluate_candidate_recall, validate_blocking
+from blocking import MultiBlocker, evaluate_candidate_recall, validate_blocking, validate_small_blocking
 from features import (
     build_feature_dataframe,
     get_feature_columns,
@@ -85,6 +85,12 @@ def parse_args():
                    help="Run blocking validation on 5000 S1 records before full pipeline run")
     p.add_argument("--validate-n", type=int, default=5_000,
                    help="Number of S1 records to use for validation (default: 5000)")
+    p.add_argument("--validate-small", action="store_true",
+                   help="Memory diagnostic: run blocking on 500 S1 records against the FULL "
+                        "reference dataset (no candidate sampling). Logs RSS before/after every "
+                        "chunk and reports candidate recall. Does not run the full pipeline.")
+    p.add_argument("--validate-small-n", type=int, default=500,
+                   help="Number of S1 records to use for --validate-small (default: 500)")
     return p.parse_args()
 
 
@@ -562,6 +568,28 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
 
     use_tfidf = not args.no_tfidf_features
+
+    # ── --validate-small: memory-diagnostic mode (exits after reporting) ──────
+    if args.validate_small:
+        logger.info("=== MODE: --validate-small (memory diagnostics only) ===")
+        logger.info("Loading and preprocessing training data for validate-small run...")
+        train_data = load_and_preprocess_train(data_dir)
+        blocker = MultiBlocker(
+            top_k=args.top_k,
+            max_candidates_per_s1=300,
+            cand_chunk_size=args.cand_chunk_size,
+        )
+        validate_small_blocking(
+            s1_df=train_data["s1_train"],
+            cand_df=train_data["cand_train"],
+            gt=train_data["gt_train"],
+            blocker=blocker,
+            n_s1=args.validate_small_n,
+        )
+        del train_data
+        gc.collect()
+        logger.info("--validate-small complete. Exiting without running full pipeline.")
+        return
 
     if args.test_only:
         # Load saved artifacts

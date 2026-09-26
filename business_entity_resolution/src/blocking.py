@@ -830,3 +830,138 @@ def validate_blocking(
 
     logger.info("Validation PASSED — proceeding to full dataset run.")
     return stats
+
+
+def validate_small_blocking(
+    s1_df: pd.DataFrame,
+    cand_df: pd.DataFrame,
+    gt: pd.DataFrame,
+    blocker: "MultiBlocker",
+    n_s1: int = 500,
+    seed: int = 42,
+) -> Dict:
+    """
+    Memory-diagnostic blocking mode: run the full blocking pipeline on a small
+    stratified S1 sample (default 500 records) against the COMPLETE reference
+    dataset (no sampling of candidates).
+
+    Purpose: identify the exact chunk and strategy causing RSS growth or an
+    OS-level kill before committing to a full-dataset run.
+
+    Key properties:
+    - S1 is sampled (stratified: 80% with GT matches, 20% singletons).
+    - Reference candidate set is NEVER sampled — all chunks from the full
+      cand_df are processed one at a time.
+    - Per-chunk RSS is logged before and after every chunk (from _block_partition).
+    - After all chunks, reports: total candidates accumulated, avg per S1,
+      candidate recall against ground truth, and per-country breakdown.
+
+    Does NOT raise on low recall (this is a diagnostic run only).
+    """
+    import gc
+    rng = np.random.RandomState(seed)
+
+    # Build GT lookup
+    gt_dict: Dict[str, Set[str]] = {}
+    for _, row in gt.iterrows():
+        sid = row["source1_entity_id"]
+        m = str(row.get("matched_entity_ids", "")).strip()
+        gt_dict[sid] = set(x.strip() for x in m.split(",") if x.strip())
+
+    # Stratified S1 sample
+    matched_ids   = [sid for sid in s1_df["entity_id"] if gt_dict.get(sid)]
+    singleton_ids = [sid for sid in s1_df["entity_id"] if not gt_dict.get(sid)]
+
+    n_matched   = min(int(n_s1 * 0.8), len(matched_ids))
+    n_singleton = min(n_s1 - n_matched, len(singleton_ids))
+
+    sampled_ids = set(
+        (rng.choice(matched_ids,   n_matched,   replace=False).tolist() if n_matched > 0 else []) +
+        (rng.choice(singleton_ids, n_singleton, replace=False).tolist() if n_singleton > 0 else [])
+    )
+    s1_sample = s1_df[s1_df["entity_id"].isin(sampled_ids)].copy()
+    gt_sample  = gt[gt["source1_entity_id"].isin(sampled_ids)].copy()
+
+    n_ref = len(cand_df)
+    n_chunks = max(1, (n_ref + blocker.cand_chunk_size - 1) // blocker.cand_chunk_size)
+
+    logger.info(
+        f"\n{'='*70}\n"
+        f"VALIDATE-SMALL BLOCKING (memory diagnostics)\n"
+        f"{'='*70}\n"
+        f"  S1 sample:          {len(s1_sample):,}  ({n_matched} matched, {n_singleton} singletons)\n"
+        f"  Reference records:  {n_ref:,}  (FULL — NOT sampled)\n"
+        f"  Chunk size:         {blocker.cand_chunk_size:,}\n"
+        f"  Total ref chunks:   {n_chunks}\n"
+        f"  Initial RSS:        {get_process_rss_mb():.1f} MB\n"
+        f"{'='*70}"
+    )
+
+    t0 = time.perf_counter()
+    block_info = blocker.generate_candidates(s1_sample, cand_df)
+    elapsed = time.perf_counter() - t0
+
+    gc.collect()
+    rss_final = get_process_rss_mb()
+
+    # Per-country candidate breakdown
+    countries = s1_sample["country_norm"].unique().tolist() if "country_norm" in s1_sample.columns else []
+    country_stats = []
+    for country in sorted(countries):
+        sids_in_country = s1_sample[s1_sample["country_norm"] == country]["entity_id"].tolist()
+        total_cands_c = sum(len(block_info.get(sid, {}).get("all_candidates", set())) for sid in sids_in_country)
+        avg_c = total_cands_c / max(1, len(sids_in_country))
+        country_stats.append((country, len(sids_in_country), total_cands_c, avg_c))
+
+    # Recall
+    recall_stats = evaluate_candidate_recall(block_info, gt_sample, label="ValidateSmall")
+    recall = recall_stats["candidate_recall"]
+    avg_cands = recall_stats["avg_candidates_per_s1"]
+    total_cands = recall_stats["total_candidates"]
+    recovered = recall_stats["recovered"]
+    total_gt = recall_stats["total_true_matches"]
+
+    n_singletons_after = sum(
+        1 for sid, r in block_info.items() if len(r.get("all_candidates", set())) == 0
+    )
+    singleton_rate = n_singletons_after / max(1, len(block_info))
+
+    # Report
+    country_lines = "\n".join(
+        f"    {c:<10s}  {ns:>5,} S1  |  {tc:>8,} total cands  |  avg {av:>6.1f}"
+        for c, ns, tc, av in country_stats
+    )
+
+    logger.info(
+        f"\n{'='*70}\n"
+        f"VALIDATE-SMALL RESULTS\n"
+        f"{'='*70}\n"
+        f"  Elapsed:               {elapsed:.1f}s\n"
+        f"  Final RSS:             {rss_final:.1f} MB\n"
+        f"\n"
+        f"  Total candidates:      {total_cands:,}\n"
+        f"  Avg candidates/S1:     {avg_cands:.1f}\n"
+        f"  Singleton rate:        {singleton_rate:.3f} ({n_singletons_after} / {len(block_info)} S1 with 0 cands)\n"
+        f"\n"
+        f"  Candidate recall:      {recall:.4f}  ({recovered} / {total_gt} GT matches recovered)\n"
+        f"\n"
+        f"  Per-country breakdown:\n"
+        f"{country_lines}\n"
+        f"{'='*70}"
+    )
+
+    stats = {
+        "n_s1_sample":             len(s1_sample),
+        "n_ref_total":             n_ref,
+        "n_ref_chunks":            n_chunks,
+        "elapsed_seconds":         elapsed,
+        "final_rss_mb":            rss_final,
+        "total_candidates":        total_cands,
+        "avg_candidates_per_s1":   avg_cands,
+        "singleton_rate":          singleton_rate,
+        "candidate_recall":        recall,
+        "recovered_gt":            recovered,
+        "total_gt_matches":        total_gt,
+        "country_stats":           country_stats,
+    }
+    return stats

@@ -1,0 +1,15 @@
+
+# Large datasets
+dataset/
+*.tsv
+*.csv
+
+# Generated outputs
+output/
+model_artifacts/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
