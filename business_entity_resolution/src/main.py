@@ -609,7 +609,8 @@ def main():
         return
 
     if args.test_only:
-        # Load saved artifacts        artifact_path = os.path.join(MODEL_DIR, "pipeline_artifacts.pkl")
+        # Load saved artifacts
+        artifact_path = os.path.join(MODEL_DIR, "pipeline_artifacts.pkl")
         logger.info(f"Loading artifacts from {artifact_path}...")
         with open(artifact_path, "rb") as f:
             artifacts = pickle.load(f)
