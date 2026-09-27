@@ -437,11 +437,13 @@ class MultiBlocker:
         max_candidates_per_s1: int = 200,
         fallback_fraction: float = 0.10,
         cand_chunk_size: int = 250_000,
+        fast_local: bool = False,
     ):
         self.top_k = top_k
         self.max_candidates_per_s1 = max_candidates_per_s1
         self.fallback_fraction = fallback_fraction
         self.cand_chunk_size = cand_chunk_size
+        self.fast_local = fast_local
 
     def generate_candidates(
         self,
@@ -563,13 +565,19 @@ class MultiBlocker:
         else:
             sample_indices = np.linspace(0, n_cands - 1, 250_000, dtype=int)
 
-        tfidf_configs = [
-            ("name_char_tfidf", "name_clean", "char_wb", (3, 5)),
-            ("name_word_tfidf", "name_clean", "word", (1, 2)),
-            ("addr_char_tfidf", "addr_expanded", "char_wb", (3, 5)),
-            ("addr_word_tfidf", "addr_expanded", "word", (1, 2)),
-            ("fulltext_tfidf", "combined_text", "word", (1, 2)),
-        ]
+        if self.fast_local:
+            # Local 8 GB Mac mode: keep the strongest approximate name retrieval.
+            tfidf_configs = [
+                ("name_char_tfidf", "name_clean", "char_wb", (3, 5)),
+            ]
+        else:
+            tfidf_configs = [
+                ("name_char_tfidf", "name_clean", "char_wb", (3, 5)),
+                ("name_word_tfidf", "name_clean", "word", (1, 2)),
+                ("addr_char_tfidf", "addr_expanded", "char_wb", (3, 5)),
+                ("addr_word_tfidf", "addr_expanded", "word", (1, 2)),
+                ("fulltext_tfidf", "combined_text", "word", (1, 2)),
+            ]
 
         tfidf_models = {}
         for block_name, col_name, analyzer, ngrams in tfidf_configs:

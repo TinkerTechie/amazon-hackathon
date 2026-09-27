@@ -271,7 +271,12 @@ def run_training(
 
     # ── Multi-blocking (with chunked candidate processing) ─────────────────
     logger.info(f"Running multi-blocking with top_k={top_k}, cand_chunk_size={cand_chunk_size}...")
-    blocker = MultiBlocker(top_k=top_k, max_candidates_per_s1=300, cand_chunk_size=cand_chunk_size)
+    blocker = MultiBlocker(
+        top_k=top_k,
+        max_candidates_per_s1=300,
+        cand_chunk_size=cand_chunk_size,
+        fast_local=True,
+    )
 
     # ── Optional validation run before full blocking ───────────────────────
     if run_validate:
@@ -579,6 +584,7 @@ def main():
             top_k=args.top_k,
             max_candidates_per_s1=300,
             cand_chunk_size=args.cand_chunk_size,
+            fast_local=True,
         )
 
         cand_train = pd.concat(
